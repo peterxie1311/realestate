@@ -1,6 +1,7 @@
 import streamlit as st
-from pyscraper import *
-from pyYieldImporter import *
+
+import pyscraper
+import pyYieldImporter
 
 
 st.set_page_config(page_title="Real Estate App", layout="wide")
@@ -13,19 +14,19 @@ url = st.text_area("paste your shit",height=400)
 #     if not url:
 #         st.error("Paste a URL first")
 #     else:
-#         st.session_state["data"] = fetchPageData(url)
+#         st.session_state["data"] = pyscraper.fetchPageData(url)
 
 # if st.button("test get links"):
-#         st.session_state["data"] = parse_links()
+#         st.session_state["data"] = pyscraper.parse_links()
 
 if st.button("test"):
-    st.session_state["data"] = fetchPageData(url)
+    st.session_state["data"] = pyscraper.fetchPageData(url)
 
 if st.button("testFixProperties"):
-    st.session_state["data"] = fixUpPropertyData()
+    st.session_state["data"] = pyscraper.fixUpPropertyData()
 
 if st.button("pyYIeld"):
-    readandImportYield()
+    pyYieldImporter.readandImportYield()
 
 
 if "data" in st.session_state:

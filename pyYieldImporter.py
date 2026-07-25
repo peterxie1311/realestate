@@ -1,6 +1,8 @@
 import pandas as pd
 import re
-from pyscraper import *
+
+import pyscraper
+
 def readandImportYield():
     file_path = "/Users/peterxie/Desktop/pythonScraper/rta-bond-statistics.xlsx"
     workbook = pd.ExcelFile(file_path)
@@ -36,7 +38,7 @@ def readandImportYield():
             "median_rent_week": float(median_rent),
             "source": "qld_rta",
         })
-        response = insertStuff(rows,"rental_market_data","quarter_end,postcode,dwelling_type,bedrooms")
+        response = pyscraper.insertStuff(rows,"rental_market_data","quarter_end,postcode,dwelling_type,bedrooms")
 
 # supabase.table("rental_market_data").upsert(
 #     rows,

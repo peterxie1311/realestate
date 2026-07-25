@@ -96,7 +96,7 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv
 from supabase import create_client
 import random
-import pyparser 
+import pyparser
 
 
 
@@ -146,17 +146,17 @@ def fetchPageData(url: str) -> dict:
         title = page.title()
         html = page.content()
 
-        top_data = parse_realestate_top_block(text)
-        address_data = extract_address_parts(title)
-        extra_data = parse_extra_fields(text)
-        location = extract_coordinates(html)
+        top_data = pyparser.parse_realestate_top_block(text)
+        address_data = pyparser.extract_address_parts(title)
+        extra_data = pyparser.parse_extra_fields(text)
+        location = pyparser.extract_coordinates(html)
 
         # page.close()
 
         data = {
             "source": "realestate" if "realestate.com.au" in url else "unknown",
             "listing_url": url,
-            "listing_id": extract_listing_id(url, text),
+            "listing_id": pyparser.extract_listing_id(url, text),
             "first_seen_at": now,
             "last_seen_at": now,
             "scraped_at": now,
