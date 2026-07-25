@@ -96,7 +96,7 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv
 from supabase import create_client
 import random
-from pyparser import *
+import pyparser 
 
 
 
