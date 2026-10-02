@@ -2,16 +2,12 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
-import socket
-import subprocess
-import os
-import time
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 from supabase import create_client
-import random
 
 # this should be the file where all the text gets parsed
+# this file should just be for realestate.com.au
 
 def clean_int(value: str) -> int | None:
     if not value:
@@ -68,47 +64,106 @@ def extract_address_parts(title: str | None) -> dict:
     return result
 
 
-def parse_price(price_text: str | None) -> dict:
-    result = {
+def empty_price_result() -> dict:
+    return {
         "price": None,
         "price_min": None,
         "price_max": None,
     }
 
+
+def parse_amount(number: str, suffix: str | None) -> int | None:
+    normalised = number.replace(",", "").replace(" ", "")
+
+    try:
+        amount = float(normalised)
+    except ValueError:
+        return None
+
+    if suffix:
+        suffix = suffix.lower()
+
+        if suffix == "k":
+            amount *= 1_000
+        elif suffix == "m":
+            amount *= 1_000_000
+
+    return round(amount)
+
+
+def parse_price(price_text: str | None) -> dict:
+    result = empty_price_result()
+
     if not price_text:
         return result
 
-    prices = re.findall(r"\$[\d,.]+(?:m|M|k|K)?", price_text)
+    text = price_text.lower().strip()
 
-    parsed = []
-    for price in prices:
-        raw = price.replace("$", "").replace(",", "").lower()
+    # These descriptions are subjective.
+    # Send them to the model instead of extracting "$200".
+    fuzzy_pattern = r"\$\s*\d{2,4}\s*['’]?s\b"
 
-        multiplier = 1
-        if raw.endswith("m"):
-            multiplier = 1_000_000
-            raw = raw[:-1]
-        elif raw.endswith("k"):
-            multiplier = 1_000
-            raw = raw[:-1]
+    if re.search(fuzzy_pattern, text):
+        #just return nothing if its a weird text let the llm figure it out later 
+        return result
 
-        try:
-            parsed.append(int(float(raw) * multiplier))
-        except ValueError:
-            pass
+    amount_pattern = re.compile(
+        r"\$\s*"
+        r"(?P<number>\d+(?:[,\s]\d{3})*(?:\.\d+)?)"
+        r"\s*(?P<suffix>[km])?",
+        re.IGNORECASE,
+    )
 
-    if len(parsed) == 1:
-        result["price"] = parsed[0]
-        result["price_min"] = parsed[0]
-    elif len(parsed) >= 2:
-        result["price_min"] = parsed[0]
-        result["price_max"] = parsed[1]
-        result["price"] = parsed[0]
+    amounts = []
+
+    for match in amount_pattern.finditer(text):
+        amount = parse_amount(
+            match.group("number"),
+            match.group("suffix"),
+        )
+
+        if amount is not None:
+            amounts.append(amount)
+
+    if not amounts:
+        return result
+
+    # Minimum-price descriptions
+    if any(phrase in text for phrase in (
+        "offers over",
+        "offers above",
+        "from",
+        "starting at",
+    )):
+        result["price_min"] = amounts[0]
+        return result
+
+    # Maximum-price descriptions
+    if any(phrase in text for phrase in (
+        "offers under",
+        "up to",
+        "below",
+    )):
+        result["price_max"] = amounts[0]
+        return result
+
+    
+
+    # Numeric range
+    if len(amounts) >= 2:
+        result["price_min"] = min(amounts[0], amounts[1])
+        result["price_max"] = max(amounts[0], amounts[1])
+        return result
+
+    # One unqualified number means an exact advertised price
+    result["price"] = amounts[0]
+    result["price_min"] = amounts[0]
+    result["price_max"] = amounts[0]
 
     return result
 
 
-def parse_land_size(value: str | None) -> int | None:
+def parse_size(value: str | None) -> int | None:
     if not value:
         return None
 
@@ -130,8 +185,38 @@ def parse_land_size(value: str | None) -> int | None:
 
 
 def is_plain_number(value: str) -> bool:
-    return bool(re.fullmatch(r"\d+", value.strip()))
+    return bool(re.fullmatch(r"\d+", value.strip(), re.IGNORECASE))
+def is_sqr_meters(value: str) -> bool:
+    return bool(
+        re.fullmatch(r"\d+\s*m[2²]", value.strip(), re.IGNORECASE)
+    )
 
+def getBuildingAndLand(text:str)-> dict:
+    land_match = re.search(
+        r"Land size:\s*([\d,.]+\s*(?:m²|sqm|m2|ha))",
+        text,
+        re.IGNORECASE,)
+    building_match = re.search(
+    r"Building size:\s*([\d,.]+\s*(?:m²|sqm|m2|ha))",
+    text,
+    re.IGNORECASE,)
+
+    building_size = None
+    land_size = None
+
+    if building_match:
+        building_size = parse_size((building_match.group(1)))
+
+    if land_match:
+        land_size = parse_size(land_match.group(1))
+    data = {'land_size_sqm':land_size,'building_size_sqm':building_size}
+    return data
+
+def cleanStrForJson(text:str) -> int | str:
+    if is_plain_number(text):
+        return clean_int(text)
+    if is_sqr_meters(text):
+        return text
 
 def parse_realestate_top_block(text: str) -> dict:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -139,8 +224,9 @@ def parse_realestate_top_block(text: str) -> dict:
     result = {
         "bedrooms": None,
         "bathrooms": None,
-        "car_spaces": None,
+        "garage_spaces": None,
         "land_size_sqm": None,
+        ""
         "property_type": None,
         "price_text": None,
         "listing_status": None,
@@ -172,17 +258,13 @@ def parse_realestate_top_block(text: str) -> dict:
 
         previous = lines[:i]
         last_line = previous[-1] if previous else ""
+    
 
-        land_size = parse_land_size(last_line)
-
-        if land_size is not None:
-            result["land_size_sqm"] = land_size
-            previous = previous[:-1]
 
         numeric_values = [
             clean_int(value)
-            for value in previous[-3:]
-            if is_plain_number(value)
+            for value in previous[-4:]
+            if is_plain_number(value) or is_sqr_meters(value)
         ]
 
         if len(numeric_values) >= 1:
@@ -192,7 +274,10 @@ def parse_realestate_top_block(text: str) -> dict:
             result["bathrooms"] = numeric_values[1]
 
         if len(numeric_values) >= 3:
-            result["car_spaces"] = numeric_values[2]
+            result["garage_spaces"] = numeric_values[2]
+
+        if len(numeric_values) >= 4:
+            result["land_size_sqm"] = numeric_values[3]
 
         break
 
@@ -200,12 +285,20 @@ def parse_realestate_top_block(text: str) -> dict:
 
     top_section = "\n".join(lines[:50]).lower()
 
+
+
     if "under contract" in top_section:
         result["listing_status"] = "under_contract"
     elif "under offer" in top_section:
         result["listing_status"] = "under_offer"
     elif re.search(r"\bsold\b", top_section):
         result["listing_status"] = "sold"
+        for i in lines:
+            if 'sold on' in i.lower():
+                date_text = i.lower().split("sold on", 1)[1].strip()
+                sold_date = datetime.strptime(date_text, "%d %b %Y").isoformat()
+                result["sold_date"] = sold_date
+                break
     elif "auction" in price_text.lower():
         result["listing_status"] = "auction"
     elif "for sale" in price_text.lower():
@@ -300,7 +393,7 @@ def parse_extra_fields(text: str) -> dict:
         "dishwasher": "dishwasher",
         "built_in_wardrobes": "built-in wardrobes",
         "solar": "solar",
-        "garage": "garage",
+        # "garage": "garage",
         "balcony": "balcony",
         "courtyard": "courtyard",
         "nbn": "nbn",
@@ -317,7 +410,6 @@ def parse_extra_fields(text: str) -> dict:
     # print(features)
     # print(features_text)
     for key, keyword in feature_keywords.items():
-        print(keyword)
         result["features"][key] = keyword in features_text.lower()
 
     return result
@@ -337,6 +429,12 @@ def extract_coordinates(html: str) -> dict:
         html,
         re.IGNORECASE,
     )
+    # if not longitude_match:
+    #     longitude_match = re.search(
+    #     r'longitude\\\*"\s*:\s*(-?\d+(?:\.\d+)?)',
+    #     html,
+    #     re.IGNORECASE,
+    # )
 
     return {
         "latitude": (
