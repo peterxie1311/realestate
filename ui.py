@@ -1,7 +1,9 @@
 import streamlit as st
 
 import pyscraper
+import pyparser
 import pyYieldImporter
+import fixerfunctions as f
 
 
 st.set_page_config(page_title="Real Estate App", layout="wide")
@@ -20,14 +22,20 @@ html = st.text_area("paste html data here",height = 400)
 # if st.button("test get links"):
 #         st.session_state["data"] = pyscraper.parse_links()
 
+if st.button("fixuptoppart"):
+    f.fixuptopfields()
+
 if st.button("test"):
     st.session_state["data"],page = pyscraper.fetchPageData(url,False,True,None)
 
 if st.button("parselinks"):
-    st.session_state["data"] = pyscraper.parse_links()
+    st.session_state["data"] = pyscraper.parse_links(html)
 
 if st.button("Save Data"):
     pyscraper.savePropertyData()
+
+if st.button("test landsize"):
+    st.session_state["data"] = pyparser.parse_realestate_top_block(html)
 
 
 
@@ -46,10 +54,10 @@ if st.button("upsert that shit!"):
 if st.button("testproperties"):
     pyscraper.searchPropertyInfo(url)
 
-if st.button("Enter the URL for the realeastate listings and we will fetch it into property links for sold props"):
-    pyscraper.fetch_listing_links(url,True)
-if st.button("Enter the URL for the realeastate listings and we will fetch it into property links for unsold props"):
-    pyscraper.fetch_listing_links(url,False)
+if st.button("Fetch sold property links"):
+    pyscraper.fetch_listing_links(url,True,80)
+if st.button("EFetch unsold property links"):
+    pyscraper.fetch_listing_links(url,False,80)
 if "data" in st.session_state:
     data = st.session_state["data"]
 

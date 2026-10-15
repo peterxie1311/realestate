@@ -183,13 +183,50 @@ def parse_size(value: str | None) -> int | None:
 
     return None
 
+def cleanStrForJson(text: str) -> int | float | str:
+    if is_plain_number(text):
+        return clean_int(text)
+
+    if is_land_size(text):
+        return clean_land_size(text)
+
+    return text
+
 
 def is_plain_number(value: str) -> bool:
-    return bool(re.fullmatch(r"\d+", value.strip(), re.IGNORECASE))
-def is_sqr_meters(value: str) -> bool:
     return bool(
-        re.fullmatch(r"\d+\s*m[2²]", value.strip(), re.IGNORECASE)
+        re.fullmatch(r"\d+", value.strip())
     )
+
+
+def is_land_size(value: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\d[\d,]*(?:\.\d+)?\s*(?:m[2²]|sqm|ha|hectares?)",
+            value.strip(),
+            re.IGNORECASE
+        )
+    )
+
+
+def clean_land_size(value: str) -> int | float |None:
+    match = re.fullmatch(
+        r"(\d[\d,]*(?:\.\d+)?)\s*(m[2²]|sqm|ha|hectares?)",
+        value.strip(),
+        re.IGNORECASE
+    )
+
+    if not match:
+        return None
+
+    number = float(match.group(1).replace(",", ""))
+    unit = match.group(2).lower()
+
+    if unit in ("ha", "hectare", "hectares"):
+        number *= 10_000
+
+    # Return int when there's no decimal component
+    return int(number) if number.is_integer() else number
 
 def getBuildingAndLand(text:str)-> dict:
     land_match = re.search(
@@ -212,11 +249,7 @@ def getBuildingAndLand(text:str)-> dict:
     data = {'land_size_sqm':land_size,'building_size_sqm':building_size}
     return data
 
-def cleanStrForJson(text:str) -> int | str:
-    if is_plain_number(text):
-        return clean_int(text)
-    if is_sqr_meters(text):
-        return text
+
 
 def parse_realestate_top_block(text: str) -> dict:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -226,7 +259,6 @@ def parse_realestate_top_block(text: str) -> dict:
         "bathrooms": None,
         "garage_spaces": None,
         "land_size_sqm": None,
-        ""
         "property_type": None,
         "price_text": None,
         "listing_status": None,
@@ -242,6 +274,10 @@ def parse_realestate_top_block(text: str) -> dict:
         "residential land",
         "acreage/semi-rural",
         "retirement living",
+        "duplex/semi-detached",
+        "other",
+        "lifestyle",
+        "acreage"
     }
 
     for i, line in enumerate(lines):
@@ -261,23 +297,24 @@ def parse_realestate_top_block(text: str) -> dict:
     
 
 
+        values = previous[-4:]
+        
         numeric_values = [
-            clean_int(value)
-            for value in previous[-4:]
-            if is_plain_number(value) or is_sqr_meters(value)
+            clean_int(v)
+            for v in values
+            if is_plain_number(v)
         ]
-
-        if len(numeric_values) >= 1:
-            result["bedrooms"] = numeric_values[0]
-
-        if len(numeric_values) >= 2:
-            result["bathrooms"] = numeric_values[1]
-
-        if len(numeric_values) >= 3:
-            result["garage_spaces"] = numeric_values[2]
-
-        if len(numeric_values) >= 4:
-            result["land_size_sqm"] = numeric_values[3]
+        
+        land_values = [
+            clean_land_size(v)
+            for v in values
+            if is_land_size(v)
+        ]
+        
+        result["bedrooms"] = numeric_values[0] if len(numeric_values) > 0 else None
+        result["bathrooms"] = numeric_values[1] if len(numeric_values) > 1 else None
+        result["garage_spaces"] = numeric_values[2] if len(numeric_values) > 2 else None
+        result["land_size_sqm"] = land_values[-1] if land_values else None\
 
         break
 
@@ -293,6 +330,7 @@ def parse_realestate_top_block(text: str) -> dict:
         result["listing_status"] = "under_offer"
     elif re.search(r"\bsold\b", top_section):
         result["listing_status"] = "sold"
+        result["sold_price"] = clean_int(price_text)
         for i in lines:
             if 'sold on' in i.lower():
                 date_text = i.lower().split("sold on", 1)[1].strip()

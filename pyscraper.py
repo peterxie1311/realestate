@@ -9,8 +9,6 @@ import pandas
 import pyBrowser
 import pyDB
 
-
-
 def reParseDb(bodyText:str):
         
         top_data = pyparser.parse_realestate_top_block(bodyText)
@@ -25,7 +23,6 @@ def reParseDb(bodyText:str):
             **buildingandland
         }
         return data
-
 
 def fetchPageDataBatch(url: str,is_init:bool,shouldClose:bool,oldPage:Page,p:Playwright) -> tuple[dict,Page]:
    now = datetime.now().isoformat()
@@ -45,6 +42,7 @@ def fetchPageDataBatch(url: str,is_init:bool,shouldClose:bool,oldPage:Page,p:Pla
    address_data = pyparser.extract_address_parts(title)
    extra_data = pyparser.parse_extra_fields(text)
    location = pyparser.extract_coordinates(html)
+
    # page.close()
    data = {
        "source": "realestate" if "realestate.com.au" in url else "unknown",
@@ -145,7 +143,7 @@ def searchPropertyInfo(address:str):
         )
         print(links)
 
-def fetch_listing_links(search_url: str,is_sold:bool) -> list[str]:
+def fetch_listing_links(search_url: str,is_sold:bool,maxpagenum:int) -> list[str]:
     with sync_playwright() as p:
         if not pyBrowser.is_port_open():
             pyBrowser.initBrowser(3)
@@ -162,7 +160,7 @@ def fetch_listing_links(search_url: str,is_sold:bool) -> list[str]:
             searchString = r"realestate\.com\.au/property-"
 
 
-        for page_num in range(1, 25):
+        for page_num in range(1, maxpagenum):
             new_url = re.sub(r"list-\d+", f"list-{page_num}", search_url)
             time.sleep(1)
             page.goto(new_url, wait_until="domcontentloaded", timeout=30000)
@@ -187,114 +185,48 @@ def fetch_listing_links(search_url: str,is_sold:bool) -> list[str]:
 
     return listing_links
 
-
 def parse_links():
     links = pyDB.get_links()
     results = []
     oldPage = None
-    is_init = False
-    shouldClose = False
-    
+    j=1
+
     with sync_playwright() as p:
         for i, link in enumerate(links, start=1):
             print(f"Scraping {i}/{len(links)}: {link}")
+
             try:
-                if i != 1 and not is_init and oldPage is not None:
-                    is_init = True
-                if i == len(links):
-                    shouldClose = True
-                data,page = fetchPageDataBatch(link,is_init,shouldClose,oldPage,p)
-                oldPage = page
+                is_init = oldPage is not None
+                shouldClose = j == 2 or i == len(links)
+                # print(shouldClose)
+                if j == 2:
+                    j=1
+
+                data, page = fetchPageDataBatch(
+                    link, is_init, shouldClose, oldPage, p
+                )
+                if data["latitude"] is None:
+                    raise ValueError("Missing latitude")
+
+                # data,Page fetchPageData(link,)
+
+                oldPage = None if shouldClose else page
+
                 pyDB.insert_property(data)
-                results.append(data)
+                # results.append(data)
+                time.sleep(1)
+                j=j+1
 
             except Exception as e:
                 print(f"Failed {link}: {e}")
-
-            # time.sleep(random.uniform(2, 5))
+                parse_links()
+                break
+                
 
     return results
 
-def savePropertyData():
-    data = pyDB.get_propertydata()
-    df = pandas.DataFrame(data)
-    df.to_csv("properties.csv", index=False)
 
 
-
-
-# def fixupwronglyparsedrows():
-#     response = (
-#         supabase.table("properties").select("id,raw_text").execute()
-#     )
-#     to_update = []
-#     for row in response.data:
-
-#         d = reParseDb(row['raw_text'])
-#         to_updateData = {**d,'id':row['id']}
-#         to_update.append(to_updateData)
-    
-
-#     batch_size = 10
-
-#     for start in range(0, len(to_update), batch_size):
-#         batch = to_update[start:start + batch_size]
-
-#         (
-#             supabase.table("properties")
-#             .upsert(batch, on_conflict="id")
-#             .execute()
-#         )
-
-#         print(f"Updated {start + len(batch)}/{len(to_update)}")
-
-
-# def fixUpPropertyData(limit: int = 20):
-#     response = (
-#         supabase
-#         .table("properties")
-#         .select("id, listing_url")
-#         .is_("longitude", "null")
-#         # .limit(limit)
-#         .execute()
-#     )
-
-#     updated = []
-#     failed = []
-
-#     for row in response.data:
-#         try:
-         
-#             parsed = fetchPageData(row["listing_url"])
-
-#             update_data = {
-#                 **parsed,
-            
-#                 "updated_at": datetime.now(timezone.utc).isoformat(),
-#             }
-#             print("done")
-
-#             (
-#                 supabase
-#                 .table("properties")
-#                 .update(update_data)
-#                 .eq("id", row["id"])
-#                 .execute()
-#             )
-
-#             updated.append(row["id"])
-#             # time.sleep(1)
-
-#         except Exception as exc:
-#             failed.append({
-#                 "id": row["id"],
-#                 "error": str(exc),
-#             })
-
-#     return {
-#         "updated": len(updated),
-#         "failed": failed,
-#     }
 
 
 
