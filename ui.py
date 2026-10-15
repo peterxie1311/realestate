@@ -29,13 +29,13 @@ if st.button("test"):
     st.session_state["data"],page = pyscraper.fetchPageData(url,False,True,None)
 
 if st.button("parselinks"):
-    st.session_state["data"] = pyscraper.parse_links(html)
+    st.session_state["data"] = pyscraper.parse_links()
 
-if st.button("Save Data"):
-    pyscraper.savePropertyData()
+# if st.button("Save Data"):
+#     pyscraper.savePropertyData()
 
-if st.button("test landsize"):
-    st.session_state["data"] = pyparser.parse_realestate_top_block(html)
+# if st.button("test landsize"):
+#     st.session_state["data"] = pyparser.parse_realestate_top_block(html)
 
 
 

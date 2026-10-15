@@ -190,8 +190,9 @@ def insert_links(links: list[str]):
 
         conn.commit()
 
-    except Exception:
+    except Exception as e:
         conn.rollback()
+        print(e)
         raise
 
     finally:

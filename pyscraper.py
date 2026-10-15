@@ -8,6 +8,7 @@ import pyparser
 import pandas 
 import pyBrowser
 import pyDB
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 def reParseDb(bodyText:str):
         
@@ -162,8 +163,9 @@ def fetch_listing_links(search_url: str,is_sold:bool,maxpagenum:int) -> list[str
 
         for page_num in range(1, maxpagenum):
             new_url = re.sub(r"list-\d+", f"list-{page_num}", search_url)
-            time.sleep(1)
-            page.goto(new_url, wait_until="domcontentloaded", timeout=30000)
+            # time.sleep(1)
+            # page.goto(new_url, wait_until="domcontentloaded", timeout=30000)
+            goto_listing(page, new_url)
             page.wait_for_timeout(3000)
 
             hrefs = page.eval_on_selector_all(
@@ -176,6 +178,7 @@ def fetch_listing_links(search_url: str,is_sold:bool,maxpagenum:int) -> list[str
                     clean_url = href.split("?")[0]
 
                     if clean_url not in listing_links:
+                        # print(clean_url)
                         listing_links.append(clean_url)
         # print(listing_links)
         pyDB.insert_links(listing_links)
@@ -224,6 +227,58 @@ def parse_links():
                 
 
     return results
+
+# def goto_listing(page: Page, url: str, retries: int = 2):
+#     for attempt in range(retries + 1):
+#         page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+#         try:
+#             # Allow time for the page to render visible text.
+#             page.wait_for_function(
+#                 """() => document.body &&
+#                     document.body.innerText.trim().length > 0""",
+#                 timeout=10000,
+#             )
+#             return
+#         except PlaywrightTimeoutError:
+#             if attempt == retries:
+#                 raise RuntimeError(
+#                     f"Page stayed blank after {retries + 1} attempts: {url}"
+#                 )
+
+#             print(f"Blank page detected. Visiting homepage before retry: {url}")
+#             page.goto(
+#                 "https://www.realestate.com.au/",
+#                 wait_until="domcontentloaded",
+#                 timeout=30000,
+#             )
+#             page.wait_for_timeout(2000)
+def goto_listing(page: Page, url: str):
+    def wait_for_content():
+        try:
+            page.wait_for_function(
+                """() => document.body &&
+                    document.body.innerText.trim().length > 0""",
+                timeout=5000,
+            )
+            return True
+        except PlaywrightTimeoutError:
+            return False
+
+    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+    if wait_for_content():
+        return
+
+    for attempt in range(1, 4):
+        print(f"Blank page — refreshing {attempt}/3: {url}")
+        # page.wait_for_timeout(2000)
+        page.reload(wait_until="domcontentloaded", timeout=10000)
+
+        if wait_for_content():
+            return
+
+    raise RuntimeError(f"Page stayed blank after 3 refreshes: {url}")
 
 
 
