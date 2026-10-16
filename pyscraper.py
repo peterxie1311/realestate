@@ -1,3 +1,4 @@
+import random
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -9,6 +10,7 @@ import pandas
 import pyBrowser
 import pyDB
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Error as PlaywrightError
 
 def reParseDb(bodyText:str):
         
@@ -69,58 +71,58 @@ def fetchPageDataBatch(url: str,is_init:bool,shouldClose:bool,oldPage:Page,p:Pla
    return data,page
 
 
-def fetchPageData(url: str,is_init:bool,shouldClose:bool,oldPage:Page) -> tuple[dict,Page]:
+def fetchPageData(url: str,is_init:bool,isJustVisitng:bool) -> dict:
     now = datetime.now().isoformat()
+    
 
     with sync_playwright() as p:
         if not pyBrowser.is_port_open():
             pyBrowser.initBrowser(3)
+        browser = p.chromium.connect_over_cdp("http://localhost:9222")
+        context = browser.contexts[0]
+        page = context.new_page()
+        try:
+        # page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            goto_listing(page,url)
 
-        if is_init ==  False:
-            browser = p.chromium.connect_over_cdp("http://localhost:9222")
-            context = browser.contexts[0]
-            page = context.new_page()
+            if isJustVisitng:
+                page.close()
+                return
+        
+            text = page.locator("body").inner_text()
+            title = page.title()
+            html = page.content()
+            top_data = pyparser.parse_realestate_top_block(text)
+            address_data = pyparser.extract_address_parts(title)
+            extra_data = pyparser.parse_extra_fields(text)
+            location = pyparser.extract_coordinates(html)
+            # page.close()
+            data = {
+                "source": "realestate" if "realestate.com.au" in url else "unknown",
+                "listing_url": url,
+                "listing_id": pyparser.extract_listing_id(url, text),
+                "first_seen_at": now,
+                "last_seen_at": now,
+                "scraped_at": now,
+                "title": title,
+                "description": None,
+                **address_data,
+                **top_data,
+                **extra_data,
+                **location,
+                "status": "watching",
+                "raw_text": text,
+                "html_content":html
+            }
+            # page.close()
+            
+        except Exception:
+            print(f"Failed tab left open: {page.url}")
+            raise
         else:
-            page = oldPage
-
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-        text = page.locator("body").inner_text()
-        title = page.title()
-        html = page.content()
-
-        top_data = pyparser.parse_realestate_top_block(text)
-        address_data = pyparser.extract_address_parts(title)
-        extra_data = pyparser.parse_extra_fields(text)
-        location = pyparser.extract_coordinates(html)
-
-        # page.close()
-
-        data = {
-            "source": "realestate" if "realestate.com.au" in url else "unknown",
-            "listing_url": url,
-            "listing_id": pyparser.extract_listing_id(url, text),
-            "first_seen_at": now,
-            "last_seen_at": now,
-            "scraped_at": now,
-
-            "title": title,
-            "description": None,
-
-            **address_data,
-            **top_data,
-            **extra_data,
-            **location,
-
-            "status": "watching",
-            "raw_text": text,
-            "html_content":html
-        }
-
-        if shouldClose:
             page.close()
-
-        return data,page
+            return data
+    
     
 def searchPropertyInfo(address:str):
     query = f'site:property.com.au "{address}"'
@@ -188,42 +190,64 @@ def fetch_listing_links(search_url: str,is_sold:bool,maxpagenum:int) -> list[str
 
     return listing_links
 
-def parse_links():
+def parse_links(tries:int):
     links = pyDB.get_links()
     results = []
     oldPage = None
     j=1
+    if tries == 3:
+        return
 
-    with sync_playwright() as p:
-        for i, link in enumerate(links, start=1):
-            print(f"Scraping {i}/{len(links)}: {link}")
+    try:
+        for link in links:
+            print(f"Scraping {j}/{len(links)}: {link}")
+            data = fetchPageData(link,False,False)
+            pyDB.insert_property(data)
+            j+=1
+            # After successfully saving each property:
+            time.sleep(random.uniform(2, 5))
 
-            try:
-                is_init = oldPage is not None
-                shouldClose = j == 2 or i == len(links)
-                # print(shouldClose)
-                if j == 2:
-                    j=1
+            if j % 50 == 0:
+                print("Taking a 2-minute break...")
+                time.sleep(120)
+    except Exception as e:
+        print(f"Failed {link}: {e}")
+        fetchPageData("https://www.realestate.com.au/",False,True)
+        parse_links(tries+1)
 
-                data, page = fetchPageDataBatch(
-                    link, is_init, shouldClose, oldPage, p
-                )
-                if data["latitude"] is None:
-                    raise ValueError("Missing latitude")
 
-                # data,Page fetchPageData(link,)
 
-                oldPage = None if shouldClose else page
 
-                pyDB.insert_property(data)
-                # results.append(data)
-                time.sleep(1)
-                j=j+1
+    # with sync_playwright() as p:
+    #     for i, link in enumerate(links, start=1):
+    #         print(f"Scraping {i}/{len(links)}: {link}")
 
-            except Exception as e:
-                print(f"Failed {link}: {e}")
-                parse_links()
-                break
+    #         try:
+    #             is_init = oldPage is not None
+    #             shouldClose = j == 2 or i == len(links)
+    #             # print(shouldClose)
+    #             if j == 2:
+    #                 j=1
+
+    #             data, page = fetchPageDataBatch(
+    #                 link, is_init, shouldClose, oldPage, p
+    #             )
+    #             if data["latitude"] is None:
+    #                 raise ValueError("Missing latitude")
+
+    #             # data,Page fetchPageData(link,)
+
+    #             oldPage = None if shouldClose else page
+
+    #             pyDB.insert_property(data)
+    #             # results.append(data)
+    #             time.sleep(1)
+    #             j=j+1
+
+    #         except Exception as e:
+    #             print(f"Failed {link}: {e}")
+    #             # parse_links()
+    #             break
                 
 
     return results

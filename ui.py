@@ -29,7 +29,7 @@ if st.button("test"):
     st.session_state["data"],page = pyscraper.fetchPageData(url,False,True,None)
 
 if st.button("parselinks"):
-    st.session_state["data"] = pyscraper.parse_links()
+    st.session_state["data"] = pyscraper.parse_links(0)
 
 # if st.button("Save Data"):
 #     pyscraper.savePropertyData()
