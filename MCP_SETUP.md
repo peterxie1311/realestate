@@ -19,23 +19,30 @@ Local MCP endpoint: `http://127.0.0.1:8765/mcp`.
 
 ## Database permissions (important)
 
-Create a dedicated login as a PostgreSQL administrator, using a strong unique
-password. For each database schema you want accessible, grant USAGE on the
-schema and SELECT on its tables. Example for the public schema:
+Run the installer as a PostgreSQL administrator **connected to the target database**:
+
+```bash
+psql -U postgres -d your_database -f sql/install/001_mcp_reader.sql
+psql -U postgres -d your_database
+```
+
+Then set a strong password in the interactive `psql` prompt:
 
 ```sql
-CREATE ROLE mcp_reader LOGIN PASSWORD 'REPLACE_WITH_LONG_RANDOM_PASSWORD';
-GRANT CONNECT ON DATABASE your_database TO mcp_reader;
-GRANT USAGE ON SCHEMA public TO mcp_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_reader;
+\\password mcp_reader
+```
+
+The installer grants SELECT on existing tables in all non-system schemas.
+For tables created in the future, grant default privileges as each table-owning
+role (example for the `public` schema):
+
+```sql
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT ON TABLES TO mcp_reader;
 ```
 
-Repeat the schema grants for any other schemas you want available. Default
-privileges only apply to future tables created by the role whose defaults are
-altered; repeat for other table-owner roles if needed. Do not give this login
-superuser, CREATE, or write privileges.
+The dedicated login should have no other memberships or write privileges.
+Review any permissions inherited through PUBLIC or existing role memberships.
 
 Add these variables to the Pi's local `.env` (never commit this file):
 
