@@ -1,102 +1,136 @@
-"""Read-only MCP diagnostics for the Raspberry Pi real estate scraper.
+"""Read-only PostgreSQL MCP server for Raspberry Pi.
 
-Launch with: python mcp_server.py
-Requires: pip install "mcp[cli]" psutil psycopg2-binary python-dotenv
+This server offers schema discovery and SELECT queries across all tables the
+configured database role can read. It does not expose OS or scraper commands.
 
-The HTTP listener binds to localhost only. Publish it through an authenticated
-HTTPS reverse proxy/tunnel; do not forward its port directly from your router.
+Start: python mcp_server.py
+Local endpoint: http://127.0.0.1:8765/mcp
 """
 from __future__ import annotations
 
 import os
-import subprocess
-from pathlib import Path
+from contextlib import contextmanager
 
-import psutil
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-ROOT = Path(__file__).resolve().parent
-LOG_DIR = ROOT / "logs"
-load_dotenv(ROOT / ".env")
+load_dotenv()
 
-# Streamable HTTP transport. Only a trusted proxy should expose this service.
-mcp = FastMCP("Real Estate Pi Diagnostics", host="127.0.0.1", port=8765)
-PROCESS_NAMES = (
-    "pyparserealestate.py",
-    "pyparsesoldrealestate.py",
-    "pyenrich_properties_ai.py",
-    "pyrefresh_listing_status.py",
-)
+mcp = FastMCP("PostgreSQL Read-Only Explorer", host="127.0.0.1", port=8765)
+MAX_ROWS = 500
+QUERY_TIMEOUT_MS = 10_000
 
 
-@mcp.tool()
-def get_system_health() -> dict:
-    """Read current Pi CPU, RAM, disk and uptime metrics."""
-    disk = psutil.disk_usage(str(ROOT))
-    memory = psutil.virtual_memory()
-    return {
-        "cpu_percent": psutil.cpu_percent(interval=0.2),
-        "memory_percent": memory.percent,
-        "disk_percent": disk.percent,
-        "uptime_seconds": round(__import__("time").time() - psutil.boot_time()),
-    }
+@contextmanager
+def _read_only_connection():
+    """Use a read-only transaction with a statement timeout for each request.
 
-
-@mcp.tool()
-def get_scraper_status() -> dict:
-    """Find the four known Python worker scripts without running shell commands."""
-    status = {name: [] for name in PROCESS_NAMES}
-    for process in psutil.process_iter(["pid", "cmdline"]):
-        try:
-            command = process.info["cmdline"] or []
-            for name in PROCESS_NAMES:
-                if any(Path(part).name == name for part in command):
-                    status[name].append(process.info["pid"])
-        except (psutil.AccessDenied, psutil.NoSuchProcess):
-            continue
-    return status
-
-
-@mcp.tool()
-def read_scraper_logs(worker: str, lines: int = 50) -> str:
-    """Read the end of a known worker log (never an arbitrary file path)."""
-    allowed = {"active", "sold", "ai", "status"}
-    if worker not in allowed:
-        raise ValueError(f"worker must be one of: {', '.join(sorted(allowed))}")
-    lines = max(1, min(lines, 200))
-    path = LOG_DIR / f"{worker}.log"
-    if not path.is_file():
-        return f"No log file found for {worker}."
-    # Keep memory bounded for large log files.
-    from collections import deque
-    with path.open("r", encoding="utf-8", errors="replace") as stream:
-        return "".join(deque(stream, maxlen=lines))[-30000:]
-
-
-@mcp.tool()
-def get_database_stats() -> dict:
-    """Count properties by listing status with a read-only PostgreSQL session."""
-    import psycopg2
-
-    connection = psycopg2.connect(
-        dbname=os.environ["dbname"],
-        user=os.environ["dbuser"],
-        password=os.environ["dbpassword"],
+    The database user should ALSO have only SELECT privileges. PostgreSQL role
+    permissions, not SQL string filtering, are the security boundary.
+    """
+    conn = psycopg2.connect(
         host=os.environ["dbhost"],
         port=os.environ["dbport"],
+        dbname=os.environ["dbname"],
+        user=os.environ.get("MCP_DB_USER", os.environ["dbuser"]),
+        password=os.environ.get("MCP_DB_PASSWORD", os.environ["dbpassword"]),
         connect_timeout=5,
-        options="-c default_transaction_read_only=on",
+        options=f"-c default_transaction_read_only=on -c statement_timeout={QUERY_TIMEOUT_MS}",
     )
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """SELECT COALESCE(listing_status, 'unknown'), COUNT(*)
-                   FROM public.properties GROUP BY listing_status"""
-            )
-            return dict(cursor.fetchall())
+        conn.set_session(readonly=True, autocommit=False)
+        yield conn
     finally:
-        connection.close()
+        conn.rollback()
+        conn.close()
+
+
+def _fetch(query: str, parameters: tuple = (), limit: int = MAX_ROWS) -> list[dict]:
+    with _read_only_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(query, parameters)
+            if cursor.description is None:
+                raise ValueError("The query must return rows.")
+            return [dict(row) for row in cursor.fetchmany(limit)]
+
+
+@mcp.tool()
+def list_schemas() -> list[str]:
+    """List accessible non-system PostgreSQL schemas."""
+    rows = _fetch(
+        """SELECT schema_name FROM information_schema.schemata
+           WHERE schema_name <> 'information_schema'
+             AND schema_name NOT LIKE 'pg_%'
+           ORDER BY schema_name"""
+    )
+    return [row["schema_name"] for row in rows]
+
+
+@mcp.tool()
+def list_tables(schema: str | None = None) -> list[dict]:
+    """List tables and views in all accessible schemas, or one schema."""
+    return _fetch(
+        """SELECT table_schema, table_name, table_type
+           FROM information_schema.tables
+           WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+             AND (%s IS NULL OR table_schema = %s)
+           ORDER BY table_schema, table_name""",
+        (schema, schema),
+    )
+
+
+@mcp.tool()
+def describe_table(schema: str, table: str) -> dict:
+    """Describe columns, types, nullability, primary keys and foreign keys."""
+    columns = _fetch(
+        """SELECT column_name, data_type, udt_name, is_nullable,
+                  column_default, ordinal_position
+           FROM information_schema.columns
+           WHERE table_schema = %s AND table_name = %s
+           ORDER BY ordinal_position""",
+        (schema, table),
+    )
+    constraints = _fetch(
+        """SELECT tc.constraint_name, tc.constraint_type,
+                  kcu.column_name, ccu.table_schema AS foreign_schema,
+                  ccu.table_name AS foreign_table,
+                  ccu.column_name AS foreign_column
+           FROM information_schema.table_constraints tc
+           LEFT JOIN information_schema.key_column_usage kcu
+             ON tc.constraint_catalog = kcu.constraint_catalog
+            AND tc.constraint_schema = kcu.constraint_schema
+            AND tc.constraint_name = kcu.constraint_name
+            AND tc.table_name = kcu.table_name
+           LEFT JOIN information_schema.constraint_column_usage ccu
+             ON tc.constraint_catalog = ccu.constraint_catalog
+            AND tc.constraint_schema = ccu.constraint_schema
+            AND tc.constraint_name = ccu.constraint_name
+           WHERE tc.table_schema = %s AND tc.table_name = %s
+           ORDER BY tc.constraint_name, kcu.ordinal_position""",
+        (schema, table),
+    )
+    return {"schema": schema, "table": table, "columns": columns, "constraints": constraints}
+
+
+@mcp.tool()
+def query_database(sql_query: str, max_rows: int = 100) -> dict:
+    """Execute a read-only SQL query, returning at most 500 rows.
+
+    PostgreSQL enforces a read-only transaction and statement timeout.
+    A dedicated SELECT-only database role is strongly recommended.
+    """
+    if not sql_query.strip():
+        raise ValueError("SQL query cannot be empty.")
+    max_rows = max(1, min(int(max_rows), MAX_ROWS))
+    rows = _fetch(sql_query, limit=max_rows + 1)
+    return {
+        "rows": rows[:max_rows],
+        "returned_rows": min(len(rows), max_rows),
+        "truncated": len(rows) > max_rows,
+        "max_rows": max_rows,
+    }
 
 
 if __name__ == "__main__":
