@@ -24,8 +24,13 @@ DEFAULT_SEARCH_URL = (
     "&sourcePage=map&sourceElement=location-tile-search"
 )
 
-PROPERTY_LINK_PATTERN = re.compile(
+ACTIVE_PROPERTY_LINK_PATTERN = re.compile(
     r"^https://www\.realestate\.com\.au/property-[^?#]+$",
+    re.IGNORECASE,
+)
+
+SOLD_PROPERTY_LINK_PATTERN = re.compile(
+    r"^https://www\.realestate\.com\.au/sold/property-[^?#]+$",
     re.IGNORECASE,
 )
 
@@ -37,14 +42,19 @@ class ParseSummary:
     failed: int = 0
 
 
-def _normalise_listing_url(url: str) -> str | None:
+def _normalise_listing_url(url: str, listing_kind: str) -> str | None:
     clean_url = url.split("#", 1)[0].split("?", 1)[0].rstrip("/")
-    if PROPERTY_LINK_PATTERN.match(clean_url):
+    pattern = (
+        SOLD_PROPERTY_LINK_PATTERN
+        if listing_kind == "sold"
+        else ACTIVE_PROPERTY_LINK_PATTERN
+    )
+    if pattern.match(clean_url):
         return clean_url
     return None
 
 
-def _links_on_page(page: Page) -> set[str]:
+def _links_on_page(page: Page, listing_kind: str) -> set[str]:
     hrefs = page.eval_on_selector_all(
         "a[href]",
         "elements => elements.map(element => element.href)",
@@ -52,7 +62,7 @@ def _links_on_page(page: Page) -> set[str]:
     return {
         clean_url
         for href in hrefs
-        if (clean_url := _normalise_listing_url(href)) is not None
+        if (clean_url := _normalise_listing_url(href, listing_kind)) is not None
     }
 
 
@@ -79,6 +89,7 @@ def _scroll_search_results(page: Page) -> None:
 def collect_listing_links(
     search_url: str = DEFAULT_SEARCH_URL,
     *,
+    listing_kind: str = "active",
     max_scrolls: int = 100,
     stable_rounds: int = 5,
     wait_ms: int = 1_500,
@@ -88,6 +99,8 @@ def collect_listing_links(
         raise ValueError("max_scrolls must be at least 1")
     if stable_rounds < 1:
         raise ValueError("stable_rounds must be at least 1")
+    if listing_kind not in {"active", "sold"}:
+        raise ValueError("listing_kind must be 'active' or 'sold'")
 
     with sync_playwright() as playwright:
         if not pyBrowser.is_port_open():
@@ -104,7 +117,7 @@ def collect_listing_links(
 
             for scroll_number in range(1, max_scrolls + 1):
                 previous_count = len(links)
-                links.update(_links_on_page(page))
+                links.update(_links_on_page(page, listing_kind))
 
                 print(
                     f"Map scan {scroll_number}/{max_scrolls}: "
@@ -123,7 +136,7 @@ def collect_listing_links(
                 page.wait_for_timeout(wait_ms)
 
             # Capture any cards loaded by the final scroll.
-            links.update(_links_on_page(page))
+            links.update(_links_on_page(page, listing_kind))
         finally:
             page.close()
 
@@ -135,19 +148,23 @@ def _chunks(values: list[str], size: int) -> Iterable[list[str]]:
         yield values[start : start + size]
 
 
-def mark_existing_listings_on_market(listing_urls: list[str]) -> None:
-    """Mark already-known rows found by the active search as on market."""
+def mark_existing_listing_status(
+    listing_urls: list[str],
+    listing_status: str,
+) -> None:
+    """Apply the search's authoritative status to already-known rows."""
     if not listing_urls:
         return
 
     pyDB.executeProcedure(
         """
         UPDATE properties
-           SET listing_status = 'on_market',
+           SET listing_status = %s,
                last_seen_at = %s
          WHERE listing_url = ANY(%s)
         """,
         (
+            listing_status,
             datetime.now(timezone.utc),
             listing_urls,
         ),
@@ -159,6 +176,7 @@ def _parse_batch(
     listing_urls: list[str],
     summary: ParseSummary,
     *,
+    listing_status: str,
     delay_min: float,
     delay_max: float,
 ) -> None:
@@ -176,8 +194,8 @@ def _parse_batch(
                 playwright,
             )
 
-            # The map search is the source of truth that this listing is live.
-            data["listing_status"] = "on_market"
+            # The search URL is authoritative; never infer status from page text.
+            data["listing_status"] = listing_status
             data["status"] = "watching"
             data["last_seen_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -207,6 +225,8 @@ def _parse_batch(
 def parse_all_realestate(
     search_url: str = DEFAULT_SEARCH_URL,
     *,
+    listing_kind: str = "active",
+    listing_status: str = "active",
     batch_size: int = 25,
     max_scrolls: int = 100,
     stable_rounds: int = 5,
@@ -222,6 +242,7 @@ def parse_all_realestate(
 
     listing_urls = collect_listing_links(
         search_url,
+        listing_kind=listing_kind,
         max_scrolls=max_scrolls,
         stable_rounds=stable_rounds,
     )
@@ -232,7 +253,7 @@ def parse_all_realestate(
         return summary
 
     pyDB.insert_links(listing_urls)
-    mark_existing_listings_on_market(listing_urls)
+    mark_existing_listing_status(listing_urls, listing_status)
 
     batches = list(_chunks(listing_urls, batch_size))
 
@@ -246,6 +267,7 @@ def parse_all_realestate(
                 playwright,
                 batch,
                 summary,
+                listing_status=listing_status,
                 delay_min=delay_min,
                 delay_max=delay_max,
             )
@@ -277,6 +299,8 @@ def main() -> int:
 
     summary = parse_all_realestate(
         args.search_url,
+        listing_kind="active",
+        listing_status="active",
         batch_size=args.batch_size,
         max_scrolls=args.max_scrolls,
         stable_rounds=args.stable_rounds,
