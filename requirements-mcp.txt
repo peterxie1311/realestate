@@ -1,0 +1,4 @@
+mcp[cli]>=1.0,<2
+psutil>=5.9,<8
+python-dotenv>=1,<2
+psycopg2-binary>=2.9,<3
