@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# Update the local checkout from the remote codex branch.
-# Run from anywhere: bash /path/to/realestate/git_pull.sh
+# Force-sync this checkout to the latest origin/codex.
+# WARNING: Discards local modifications to tracked files and local-only commits.
+# Untracked and ignored files (such as .env) are not deliberately removed.
 set -Eeuo pipefail
 
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
-
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "Local changes detected. Commit or stash them before pulling." >&2
-  exit 1
-fi
 
 CURRENT_BRANCH="$(git branch --show-current)"
 if [[ "$CURRENT_BRANCH" != "codex" ]]; then
@@ -18,6 +14,10 @@ if [[ "$CURRENT_BRANCH" != "codex" ]]; then
   exit 1
 fi
 
-echo "Pulling latest changes from origin/codex..."
-git pull --ff-only origin codex
-echo "Repository is up to date."
+echo "Fetching latest origin/codex..."
+git fetch origin codex
+
+echo "WARNING: Discarding local tracked-file changes and unpushed commits."
+git reset --hard origin/codex
+
+echo "Repository now matches origin/codex."
