@@ -1,56 +1,73 @@
-# Raspberry Pi MCP diagnostics
+# PostgreSQL-only MCP server on Raspberry Pi
 
-This is a **read-only** Model Context Protocol server for scraper diagnostics.
-It does **not** grant arbitrary SSH access or shell execution.
+The MCP server can inspect all schemas and tables that its PostgreSQL login
+can read. It has no operating-system or scraper-control tools.
 
-## 1. Install on the Pi
+## Install
 
 ```bash
+cd ~/realestate
 git switch codex
 git pull origin codex
 python3 -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate
 pip install -r requirements-mcp.txt
 python mcp_server.py
 ```
 
-The server listens on **127.0.0.1:8765**, with the streamable HTTP MCP
-endpoint at **http://127.0.0.1:8765/mcp**. It is not accessible from the
-internet by default. Use a systemd service to keep it running later.
+Local MCP endpoint: `http://127.0.0.1:8765/mcp`.
 
-## 2. Network access
+## Database permissions (important)
 
-**No router port forwarding is necessary.** Tailscale is suitable for private
-connections between *your* devices, but ChatGPT's cloud-hosted connector cannot
-automatically join your private tailnet.
+Create a dedicated login as a PostgreSQL administrator, using a strong unique
+password. For each database schema you want accessible, grant USAGE on the
+schema and SELECT on its tables. Example for the public schema:
 
-To connect from ChatGPT, use a publicly reachable HTTPS endpoint via a
-properly configured reverse proxy/tunnel with **authentication and access
-controls**, and configure the corresponding ChatGPT custom MCP connector if
-available on your plan. The MCP server here has **no built-in authentication**:
-**do not expose it with an unauthenticated public tunnel, Tailscale Funnel,
-or router port forwarding**.
+```sql
+CREATE ROLE mcp_reader LOGIN PASSWORD 'REPLACE_WITH_LONG_RANDOM_PASSWORD';
+GRANT CONNECT ON DATABASE your_database TO mcp_reader;
+GRANT USAGE ON SCHEMA public TO mcp_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT ON TABLES TO mcp_reader;
+```
 
-An authenticated gateway must support the MCP streamable HTTP protocol and
-forward requests to localhost:8765. Verify authorization on every request.
-Consider dedicated, read-only PostgreSQL credentials rather than reusing your
-scraper's write-capable database user.
+Repeat the schema grants for any other schemas you want available. Default
+privileges only apply to future tables created by the role whose defaults are
+altered; repeat for other table-owner roles if needed. Do not give this login
+superuser, CREATE, or write privileges.
 
-## 3. Available tools
+Add these variables to the Pi's local `.env` (never commit this file):
 
-- `get_system_health`: CPU, memory, disk and uptime.
-- `get_scraper_status`: process IDs for four known worker scripts.
-- `read_scraper_logs(worker, lines)`: last 1-200 lines of one known log.
-- `get_database_stats`: count properties grouped by listing status.
+```dotenv
+MCP_DB_USER=mcp_reader
+MCP_DB_PASSWORD=REPLACE_WITH_LONG_RANDOM_PASSWORD
+```
 
-Logs may contain private information, so only connect through a trusted,
-authenticated integration. No credentials should be committed to GitHub.
+The server retains existing `dbhost`, `dbport`, and `dbname` variables.
+The database enforces read-only transactions and a 10-second statement timeout.
+Queries return at most 500 rows per request. Query results may contain sensitive
+data; grant access only to the tables you intend to expose to ChatGPT.
 
-## 4. Test locally
+## No port forwarding
 
-Start the server in one terminal, then use the MCP Inspector from a separate
-terminal, or an MCP-compatible client, to connect to
-`http://127.0.0.1:8765/mcp`.
+The MCP listener binds to `127.0.0.1:8765` and is not internet-accessible.
 
-The server cannot be connected to this chat merely by starting it on the Pi.
-The external HTTPS gateway and ChatGPT-side connector setup are separate steps.
+For a **cloud-hosted ChatGPT MCP connector**, use an authenticated HTTPS
+gateway/tunnel (for example, Cloudflare Tunnel with an appropriate OAuth
+gateway) that supports streamable HTTP MCP and verifies authorization on every
+request. Do not expose the unauthenticated local MCP endpoint directly through
+a public tunnel, Tailscale Funnel or router port forwarding.
+
+Tailscale by itself only provides private connectivity between tailnet devices;
+it does not automatically let cloud-hosted ChatGPT reach the Pi.
+
+## Available tools
+
+- `list_schemas()`
+- `list_tables(schema=None)`
+- `describe_table(schema, table)`
+- `query_database(sql_query, max_rows=100)`
+
+The remote connector is **not configured** by committing this code. You must
+run the service on the Pi and connect an authenticated endpoint in ChatGPT.
