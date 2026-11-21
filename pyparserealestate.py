@@ -24,11 +24,13 @@ DEFAULT_SEARCH_URL = (
     "&sourcePage=map&sourceElement=location-tile-search"
 )
 
+# Match only canonical active property URLs; reject query strings and fragments.
 ACTIVE_PROPERTY_LINK_PATTERN = re.compile(
     r"^https://www\.realestate\.com\.au/property-[^?#]+$",
     re.IGNORECASE,
 )
 
+# Match only canonical sold property URLs (the /sold/property- prefix).
 SOLD_PROPERTY_LINK_PATTERN = re.compile(
     r"^https://www\.realestate\.com\.au/sold/property-[^?#]+$",
     re.IGNORECASE,
