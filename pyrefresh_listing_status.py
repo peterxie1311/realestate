@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import random
 import re
 import time
-from datetime import datetime, timezone
 
 from playwright.sync_api import sync_playwright
 import pyBrowser
@@ -47,6 +45,7 @@ def main() -> int:
                     parsed = pyparser.parse_realestate_top_block(text)
                     # Only mark sold if the page itself clearly identifies a sale.
                     # A redirect to a sold URL is also a strong indicator.
+                    # /sold/property- is a literal URL prefix; re.I ignores case.
                     sold = (
                         parsed.get("listing_status") == "sold"
                         or bool(re.search(r"/sold/property-", page.url, re.I))
