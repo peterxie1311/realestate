@@ -47,13 +47,7 @@ ddl_parts AS (
         30,
         n.nspname || '.' || c.relname,
         format(
-            E'CREATE SEQUENCE %I.%I\n'
-            E'    AS %s\n'
-            E'    INCREMENT BY %s\n'
-            E'    MINVALUE %s\n'
-            E'    MAXVALUE %s\n'
-            E'    START WITH %s\n'
-            E'    CACHE %s%s;',
+            E'CREATE SEQUENCE %I.%I\n    AS %s\n    INCREMENT BY %s\n    MINVALUE %s\n    MAXVALUE %s\n    START WITH %s\n    CACHE %s%s;',
             n.nspname,
             c.relname,
             format_type(s.seqtypid, NULL),
